@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Study Watcher Pro</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif; margin: 0; }
+  header { padding: 12px 16px; border-bottom: 1px solid #ddd; }
+  main { padding: 12px 16px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  video, canvas { width: 100%; max-height: 40vh; background: #000; border-radius: 12px; }
+  .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #ccc; font-size: 14px; }
+  .ok { background: #e7f7ee; border-color: #a3d8bf; }
+  .ng { background: #fdeaea; border-color: #f2b7b7; }
+  button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; font-size: 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  small { color: #666; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; opacity: .85; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <strong>Study Watcher Pro</strong>
+    <span id="statePill" class="pill ng">停止中</span>
+    <span id="facePill" class="pill">顔: 未検出</span>
+    <span id="scorePill" class="pill">スコア: 0</span>
+    <span id="minutePill" class="pill">勉強分: 0</span>
+  </div>
+</header>
+
+<main>
+  <video id="video" playsinline muted></video>
+  <div class="grid">
+    <button id="startBtn">開始</button>
+    <button id="stopBtn" disabled>停止</button>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label class="pill">在席しきい値: <input id="presence" type="number" min="50" max="100" step="5" value="70" style="width:64px;">%</label>
+    <label class="pill">送信間隔: <input id="flush" type="number" min="1" max="30" step="1" value="5" style="width:48px;">分</label>
+  </div>
+  <p><small>ヒント：顔＋上半身＋机が入るように端末を置いてください。ホーム画面に追加しておくと安定します。</small></p>
+  <details>
+    <summary>ログ</summary>
+    <div id="log"></div>
+  </details>
+</main>
+
+<script>
+/* ===== 設定 ===== */
+const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycby2tE_Xq1tm_NSDQVQYB52gIEb4_T5DxrYoYkbYbgdV-djRMFuFcqengAP9aWOhlKW4/exec";
+/* =============== */
+
+const ui = {
+  video: document.getElementById('video'),
+  startBtn: document.getElementById('startBtn'),
+  stopBtn: document.getElementById('stopBtn'),
+  statePill: document.getElementById('statePill'),
+  facePill: document.getElementById('facePill'),
+  scorePill: document.getElementById('scorePill'),
+  minutePill: document.getElementById('minutePill'),
+  presence: document.getElementById('presence'),
+  flush: document.getElementById('flush'),
+  log: document.getElementById('log'),
+};
+
+let stream=null, wakeLock=null, running=false;
+let tickTimer=null, flushTimer=null;
+
+let faceDetector=null, poseModel=null, objModel=null;
+let useTFJSFace=false;
+
+let samples=0, studySamples=0, studiedMinutes=Number(localStorage.getItem('studiedMinutes')||0);
+updateMinutePill();
+
+/* 依存ライブラリを読み込み */
+async function loadDeps(){
+  // FaceDetector API がなければ TFJS フォールバック
+  if (!('FaceDetector' in window)) {
+    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
+    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.0.3/dist/face-detection.min.js');
+    useTFJSFace = true;
+  }
+  // Pose（MoveNet）
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@3.7.0/dist/pose-detection.min.js');
+  // coco-ssd（携帯検出に使用）
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+}
+function loadScript(src){
+  return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.defer=true; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+}
+
+ui.startBtn.addEventListener('click', start); ui.stopBtn.addEventListener('click', stop);
+
+async function start(){
+  if (running) return; running=true;
+  ui.startBtn.disabled=true; ui.stopBtn.disabled=false; setState(true);
+
+  try{
+    await startCamera();
+    await loadDeps();
+    await initModels();
+    await requestWakeLock();
+
+    tickTimer = setInterval(tick, 1000);
+    scheduleFlush();
+    log('監視開始');
+  }catch(e){
+    log('開始失敗: '+e.message);
+    await stop();
+  }
+}
+
+async function stop(){
+  running=false;
+  clearInterval(tickTimer); clearInterval(flushTimer);
+  await releaseWakeLock();
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  ui.video.srcObject=null;
+  setState(false);
+  ui.startBtn.disabled=false; ui.stopBtn.disabled=true;
+  await flushReport(true);
+  log('監視停止');
+}
+
+async function startCamera(){
+  stream = await navigator.mediaDevices.getUserMedia({
+    video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30,max:30} }, audio:false
+  });
+  ui.video.srcObject=stream; await ui.video.play();
+}
+
+async function initModels(){
+  if ('FaceDetector' in window){
+    faceDetector = new window.FaceDetector({ fastMode:true });
+  }else{
+    const { MediaPipeFaceDetector, SupportedModels } = window.faceDetection;
+    faceDetector = await MediaPipeFaceDetector.create({ runtime:'tfjs', model: SupportedModels.MediaPipeFaceDetector, maxFaces:1 });
+  }
+  const { SupportedModels, createDetector } = window.poseDetection;
+  poseModel = await createDetector(SupportedModels.MoveNet, { modelType: 'Thunder' });
+  objModel = await cocoSsd.load(); // coco-ssd
+}
+
+async function tick(){
+  if(!running) return;
+  samples++;
+
+  const hasFace = await detectFace();
+  setFacePill(hasFace);
+
+  let poseScore = 0, phonePenalty = 0;
+  if (hasFace){
+    poseScore = await postureScore();
+    phonePenalty = await phoneScore(); // 0..1 （1=スマホ強い疑い）
+  }
+
+  // 総合スコア：姿勢7割 + 在席3割 - スマホ減点
+  const score = Math.max(0, Math.min(100, Math.round( (poseScore*0.7 + (hasFace?100:0)*0.3) - phonePenalty*40 )));
+  ui.scorePill.textContent = `スコア: ${score}`;
+
+  if (score >= 60) studySamples++; // “勉強フレーム”としてカウント
+
+  if (samples >= 60){
+    const ratio = (studySamples/samples)*100;
+    const th = clamp(Number(ui.presence.value)||70, 50, 100);
+    if (ratio >= th){
+      studiedMinutes++;
+      localStorage.setItem('studiedMinutes', String(studiedMinutes));
+      updateMinutePill();
+      log(`+1分（勉強フレーム率 ${ratio.toFixed(0)}% >= しきい値 ${th}%）`);
+    }else{
+      log(`加算なし（勉強フレーム率 ${ratio.toFixed(0)}% < しきい値 ${th}%）`);
+    }
+    samples=0; studySamples=0;
+  }
+}
+
+async function detectFace(){
+  try{
+    if ('FaceDetector' in window) {
+      const r = await faceDetector.detect(ui.video);
+      return r && r.length>0;
+    }else{
+      const r = await faceDetector.estimateFaces(ui.video, { flipHorizontal:true });
+      return r && r.length>0;
+    }
+  }catch{ return false; }
+}
+
+async function postureScore(){
+  try{
+    const poses = await poseModel.estimatePoses(ui.video, { flipHorizontal:true });
+    if (!poses || !poses[0] || !poses[0].keypoints) return 0;
+    const k = Object.fromEntries(poses[0].keypoints.map(p=>[p.name||p.part, p]));
+    // 1) うつむき度（目と耳・肩の相対、頭が少し下向きは加点し過ぎない）
+    const nose=k.nose, leftEye=k.left_eye||k.leftEye, rightEye=k.right_eye||k.rightEye, leftEar=k.left_ear||k.leftEar, rightEar=k.right_ear||k.rightEar, leftShoulder=k.left_shoulder||k.leftShoulder, rightShoulder=k.right_shoulder||k.rightShoulder, leftWrist=k.left_wrist||k.leftWrist, rightWrist=k.right_wrist||k.rightWrist;
+
+    if(!nose||!leftShoulder||!rightShoulder) return 0;
+
+    const headTilt = (()=>{ // 下向き=適度に加点、上向き=減点
+      const eyesY = avg([leftEye?.y, rightEye?.y].filter(v=>isFinite(v)));
+      const earsY = avg([leftEar?.y, rightEar?.y].filter(v=>isFinite(v)));
+      if (!isFinite(eyesY) || !isFinite(earsY)) return 50;
+      const d = eyesY - earsY; // 正だと下向き傾向
+      return clamp(50 + d*0.2, 0, 100);
+    })();
+
+    // 2) 上半身安定度（肩の動き小さいほど高得点）→ 連続フレームで本来やるが、簡易に肩の左右バランスで近似
+    const shoulderSlope = Math.atan2((leftShoulder.y - rightShoulder.y), (leftShoulder.x - rightShoulder.x));
+    const stability = 100 - Math.min(100, Math.abs(shoulderSlope)*120);
+
+    // 3) 手が画面下1/3（机領域）に存在 → 加点
+    const vh = ui.video.videoHeight || 480;
+    const deskY = vh * (2/3);
+    let handsAtDesk = 0;
+    [leftWrist, rightWrist].forEach(w=>{ if(w && w.y>=deskY) handsAtDesk+=1; });
+    const handsScore = [0, 60, 100][handsAtDesk] ?? 0;
+
+    // 総合（重み調整可）
+    return Math.round( headTilt*0.35 + stability*0.25 + handsScore*0.40 );
+  }catch{ return 0; }
+}
+
+async function phoneScore(){
+  try{
+    const preds = await objModel.detect(ui.video);
+    const phone = preds.find(p=>p.class==='cell phone' && p.score>=0.5);
+    return phone ? Math.min(1, phone.score) : 0;
+  }catch{ return 0; }
+}
+
+/* ---- 送信 ---- */
+function scheduleFlush(){
+  const mins = clamp(Number(ui.flush.value)||5, 1, 30);
+  if (flushTimer) clearInterval(flushTimer);
+  flushTimer = setInterval(()=>flushReport(false), mins*60*1000);
+}
+async function flushReport(force){
+  const minutes = studiedMinutes;
+  if (!minutes && !force) return;
+  const payload = {
+    type: 'study-minutes-report',
+    minutes,
+    ts: new Date().toISOString(),
+    ua: navigator.userAgent
+  };
+  try{
+    await fetch(GAS_ENDPOINT, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    log(`送信: ${minutes} 分`); studiedMinutes=0; localStorage.setItem('studiedMinutes','0'); updateMinutePill();
+  }catch(e){ log('送信失敗: '+e.message+'（次回再送）'); }
+}
+
+/* ---- Wake Lock ---- */
+async function requestWakeLock(){ if('wakeLock' in navigator){ try{ wakeLock = await navigator.wakeLock.request('screen'); }catch{} } }
+async function releaseWakeLock(){ try{ if(wakeLock) await wakeLock.release(); }catch{} }
+
+/* ---- UI ---- */
+function setState(active){ ui.statePill.textContent=active?'監視中':'停止中'; ui.statePill.className='pill '+(active?'ok':'ng'); }
+function setFacePill(has){ ui.facePill.textContent=has?'顔: 検出':'顔: 未検出'; ui.facePill.className='pill '+(has?'ok':'ng'); }
+function updateMinutePill(){ ui.minutePill.textContent=`勉強分: ${studiedMinutes}`; }
+function log(s){ ui.log.textContent += `[${new Date().toLocaleTimeString()}] ${s}\n`; }
+function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi,v)); }
+function avg(a){ return a.length? a.reduce((x,y)=>x+y,0)/a.length : NaN; }
+
+/* 背景化したら安全側で停止 */
+document.addEventListener('visibilitychange', ()=>{ if(document.hidden && running){ log('背景化→停止'); stop(); }});
+</script>
+</body>
+</html>
