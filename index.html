@@ -7,7 +7,13 @@
 <style>
   :root { color-scheme: light dark; }
   html, body { height: 100%; }
-  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif; background: Canvas; color: CanvasText; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: Canvas; color: CanvasText;
+  }
+
+  /* 普段は縦向き（ポートレート）前提のレイアウト */
   header { padding: 12px 16px; border-bottom: 1px solid #ddd; position: sticky; top: 0; background: inherit; z-index: 2; }
   main { padding: 12px 16px; }
   .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -19,39 +25,42 @@
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
   small { color: #666; }
   #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; opacity: .85; }
-  /* フルスクリーン時の見た目 */
-  .fs header { display: none; }
-  .fs main { padding: 0; }
-  .fs video { max-height: none; height: 100vh; border-radius: 0; }
-  .fs .floating-bar { position: fixed; bottom: 10px; left: 0; right: 0; display: flex; gap: 8px; justify-content: center; z-index: 3; }
-  .floating-bar button { opacity: .9; backdrop-filter: blur(6px); }
-  /* 横向きのときだけ適用 */
-  @media (orientation: landscape) {
-  /* ヘッダーのピル（バッジ）を横スクロール可にして潰れ防止 */
-  header .row { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; gap: 8px; }
-  .pill { font-size: 12px; padding: 4px 8px; }
+  details summary { cursor: pointer; }
 
-  /* メインは2カラム：左=映像 右=操作&ログ */
-  main { 
-    padding: 8px 12px; 
-    display: grid; 
-    grid-template-columns: 1.4fr 1fr; 
-    gap: 12px; 
-    align-items: start; 
+  /* 全画面中は横向きレイアウト（Landscape）に切り替え */
+  body.fs header { display: none; }
+  body.fs main {
+    padding: 8px 12px;
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;  /* 左:映像 / 右:操作&ログ */
+    gap: 12px;
+    align-items: start;
   }
+  body.fs video { max-height: none; height: 100vh; border-radius: 0; }
+  body.fs .floating-bar { position: fixed; bottom: 10px; left: 0; right: 0; display: flex; gap: 8px; justify-content: center; z-index: 3; }
+  body.fs .floating-bar button { opacity: .9; backdrop-filter: blur(6px); }
 
-  /* 映像は縦いっぱい（安全余白を少し引く） */
-  video { 
-    max-height: none; 
-    height: calc(100vh - 90px); /* 端末により ± 調整してOK */
-    border-radius: 10px;
+  /* 横スクロールでピルが潰れないように（全画面時の簡易ヘッダー代わり） */
+  .top-pills { display: none; }
+  body.fs .top-pills {
+    display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #ddd; overflow-x: auto; white-space: nowrap;
+    position: fixed; top: 0; left: 0; right: 0; background: inherit; z-index: 3;
   }
+  body.fs video { margin-top: 36px; } /* ピル帯のぶん下げる */
 
-  /* ボタンのグリッドや入力幅をコンパクトに */
-  .grid { grid-template-columns: 1fr 1fr; gap: 8px; }
-  label.pill input { width: 56px !important; }
-}
+  /* 端末が横向きロック不可の時に出すトースト */
+  .toast {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    background: rgba(0,0,0,.7); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 14px;
+    z-index: 5; display: none;
+  }
+  .toast.show { display: block; }
 
+  /* 小さめ端末での微修正 */
+  @media (max-width: 360px) {
+    .pill { font-size: 12px; padding: 4px 8px; }
+    .grid { gap: 8px; }
+  }
 </style>
 </head>
 <body>
@@ -66,39 +75,47 @@
   </div>
 </header>
 
+<!-- 全画面時の上部ステータス帯（横スクロール可） -->
+<div class="top-pills">
+  <span id="statePill_fs"  class="pill ng">停止中</span>
+  <span id="personPill_fs" class="pill">人: 未検出</span>
+  <span id="phonePill_fs"  class="pill">スマホ: 未検出</span>
+  <span id="scorePill_fs"  class="pill">スコア: 0</span>
+  <span id="minutePill_fs" class="pill">勉強分: 0</span>
+</div>
+
 <main>
   <video id="video" playsinline muted></video>
 
   <div class="grid">
     <button id="startBtn">開始</button>
     <button id="stopBtn" disabled>停止</button>
-  </div>
-
-  <div class="row" style="margin-top:8px;">
     <label class="pill">在席しきい値: <input id="presence" type="number" min="50" max="100" step="5" value="70" style="width:64px;">%</label>
-    <label class="pill">送信間隔: <input id="flush" type="number" min="1" max="30" step="1" value="1" style="width:48px;">分</label>
+    <label class="pill">送信間隔: <input id="flush" type="number" min="1" max="30" step="1" value="1" style="width:64px;">分</label>
     <button id="fsBtn" class="pill" title="全画面にする">全画面</button>
   </div>
 
-  <p><small>ヒント：上半身と机が映るように端末を置いてください。ホーム画面に追加（PWA化）すると安定します。</small></p>
-
+  <p><small>ヒント：普段は縦向きでOK。全画面にすると横向きに切り替わります（端末が許せば自動ロック）。</small></p>
+  <p><small>ver.1.10</small></p>
   <details>
     <summary>ログ</summary>
     <div id="log"></div>
   </details>
 </main>
 
-<!-- 全画面時の浮遊操作バー -->
+<!-- 全画面時のフッター操作バー -->
 <div class="floating-bar" style="display:none;">
   <button id="fsStart">開始</button>
   <button id="fsStop" disabled>停止</button>
   <button id="fsExit">全画面解除</button>
 </div>
 
+<div id="toast" class="toast">横向きにしてください（端末の回転ロックを解除）</div>
+
 <script>
-/* ====== 設定：あなたのGAS WebアプリURLに差し替え ====== */
+/* ====== GAS WebアプリURLをセット（/exec で終わる） ====== */
 const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycby2tE_Xq1tm_NSDQVQYB52gIEb4_T5DxrYoYkbYbgdV-djRMFuFcqengAP9aWOhlKW4/exec";
-/* ======================================================== */
+/* ======================================================= */
 
 const ui = {
   video: document.getElementById('video'),
@@ -109,14 +126,23 @@ const ui = {
   phonePill: document.getElementById('phonePill'),
   scorePill: document.getElementById('scorePill'),
   minutePill: document.getElementById('minutePill'),
+  // 全画面帯
+  statePill_fs:  document.getElementById('statePill_fs'),
+  personPill_fs: document.getElementById('personPill_fs'),
+  phonePill_fs:  document.getElementById('phonePill_fs'),
+  scorePill_fs:  document.getElementById('scorePill_fs'),
+  minutePill_fs: document.getElementById('minutePill_fs'),
+  // 入力
   presence: document.getElementById('presence'),
   flush: document.getElementById('flush'),
+  // そのほか
   log: document.getElementById('log'),
   fsBtn: document.getElementById('fsBtn'),
   fsBar: document.querySelector('.floating-bar'),
   fsStart: document.getElementById('fsStart'),
   fsStop: document.getElementById('fsStop'),
   fsExit: document.getElementById('fsExit'),
+  toast: document.getElementById('toast'),
 };
 
 let stream=null, wakeLock=null, running=false;
@@ -124,10 +150,9 @@ let tickTimer=null, flushTimer=null;
 let model=null;
 
 let samples=0, studySamples=0, studiedMinutes=Number(localStorage.getItem('studiedMinutes')||0);
-updateMinutePill();
+syncMinutePills();
 
-/* ----------------- 依存（TFJS + COCO-SSD）読み込み ----------------- */
-/* jsDelivr → unpkg の順に試す（CDNブロック対策） */
+/* ========== 依存（TFJS + COCO-SSD）読み込み（CDN多段） ========== */
 async function loadScriptTry(urls){
   let lastErr;
   for (const src of urls){
@@ -144,7 +169,6 @@ async function loadScriptTry(urls){
   }
   throw lastErr || new Error('all CDN failed');
 }
-
 async function loadDeps(){
   await loadScriptTry([
     'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js',
@@ -156,35 +180,47 @@ async function loadDeps(){
   ]);
 }
 
-/* ----------------- UIボタン ----------------- */
+/* ========== ボタン ========== */
 ui.startBtn.addEventListener('click', start);
 ui.stopBtn.addEventListener('click', stop);
 ui.fsStart.addEventListener('click', start);
 ui.fsStop .addEventListener('click', stop);
-ui.fsBtn.addEventListener('click', toggleFullscreen);
+ui.fsBtn.addEventListener('click', enterFullscreen);
 ui.fsExit.addEventListener('click', exitFullscreen);
 
-/* ----------------- フルスクリーン ----------------- */
-async function toggleFullscreen(){
-  if (!document.fullscreenElement) await enterFullscreen();
-  else await exitFullscreen();
-}
+/* ========== 全画面＆横向きロック ========== */
 async function enterFullscreen(){
   try {
-    (document.documentElement.requestFullscreen && await document.documentElement.requestFullscreen())
-      || (document.body.requestFullscreen && await document.body.requestFullscreen());
+    if (!document.fullscreenElement) {
+      if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+      else if (document.body.requestFullscreen)       await document.body.requestFullscreen();
+    }
   } catch {}
   document.body.classList.add('fs');
   ui.fsBar.style.display = 'flex';
-  try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('portrait'); } catch {}
+
+  // 可能なら横向きにロック（多くの端末で全画面中のみ許可）
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      await screen.orientation.lock('landscape');
+    } else {
+      // iOS Safari など未対応 → トーストで案内
+      showToast('横向きにしてください（端末の回転ロックを解除）');
+    }
+  } catch {
+    showToast('横向きにしてください（端末の回転ロックを解除）');
+  }
 }
 async function exitFullscreen(){
   try { if (document.fullscreenElement) await document.exitFullscreen(); } catch {}
   document.body.classList.remove('fs');
   ui.fsBar.style.display = 'none';
+
+  // 可能ならポートレートへ戻す（失敗しても問題なし）
+  try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('portrait'); } catch {}
 }
 
-/* ----------------- 開始/停止 ----------------- */
+/* ========== 開始/停止 ========== */
 async function start(){
   if (running) return;
   running = true;
@@ -215,7 +251,7 @@ async function start(){
   // 3) モデル
   try {
     log('[3] loading model...');
-    model = await window.cocoSsd.load({base:'lite_mobilenet_v2'}); // 軽量構成
+    model = await window.cocoSsd.load({base:'lite_mobilenet_v2'}); // 軽量
     log('[3] model ready');
   } catch(e){
     log('NG at model load: ' + (e?.message||e) + '（在席のみで継続）');
@@ -240,7 +276,7 @@ async function stop(){
   log('STOPPED');
 }
 
-/* ----------------- カメラ ----------------- */
+/* ========== カメラ ========== */
 async function startCamera(){
   stream = await navigator.mediaDevices.getUserMedia({
     video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480} }, audio:false
@@ -248,7 +284,7 @@ async function startCamera(){
   ui.video.srcObject=stream; await ui.video.play();
 }
 
-/* ----------------- 毎秒の判定 ----------------- */
+/* ========== 毎秒の判定 ========== */
 async function tick(){
   if(!running) return;
   samples++;
@@ -261,22 +297,24 @@ async function tick(){
       hasPerson = preds.some(p => p.class === 'person' && p.score >= 0.6);
       hasPhone  = preds.some(p => (p.class === 'cell phone' || p.class === 'mobile phone') && p.score >= 0.6);
     } else {
-      // モデル無しの場合は「在席のみ」でゆるく判定（動画が流れていれば在席扱い）
+      // モデル無しなら在席のみ（映像が流れていれば在席）
       hasPerson = !!ui.video.srcObject;
       hasPhone  = false;
     }
   }catch(e){
-    // 推論失敗は無視（在席のみ継続）
+    // 推論失敗は握りつぶして継続
   }
 
-  setPill(ui.personPill, '人', hasPerson);
-  setPill(ui.phonePill,  'スマホ', hasPhone);
+  setPill(ui.personPill,    '人', hasPerson);
+  setPill(ui.personPill_fs, '人', hasPerson);
+  setPill(ui.phonePill,     'スマホ', hasPhone);
+  setPill(ui.phonePill_fs,  'スマホ', hasPhone);
 
-  // スコア: 人検出を主、スマホ検出で減点
   const base = hasPerson ? 100 : 0;
   const penalty = hasPhone ? 40 : 0;
   const score = Math.max(0, Math.min(100, base - penalty));
   ui.scorePill.textContent = `スコア: ${score}`;
+  ui.scorePill_fs.textContent = `スコア: ${score}`;
 
   if (score >= 60) studySamples++;
 
@@ -286,7 +324,7 @@ async function tick(){
     if (ratio >= th){
       studiedMinutes++;
       localStorage.setItem('studiedMinutes', String(studiedMinutes));
-      updateMinutePill();
+      syncMinutePills();
       log(`+1分（勉強フレーム率 ${ratio.toFixed(0)}% >= しきい値 ${th}%）`);
     }else{
       log(`加算なし（勉強フレーム率 ${ratio.toFixed(0)}% < しきい値 ${th}%）`);
@@ -295,63 +333,54 @@ async function tick(){
   }
 }
 
-/* ----------------- 送信（デフォ1分ごと） ----------------- */
+/* ========== 送信（デフォ1分ごと） ========== */
 function scheduleFlush(){
   const mins = clamp(Number(ui.flush.value)||1, 1, 30);
   if (flushTimer) clearInterval(flushTimer);
   flushTimer = setInterval(()=>flushReport(false), mins*60*1000);
 }
-
 async function flushReport(force){
   const minutes = studiedMinutes;
   if (!minutes && !force) return;
-  const payload = {
-    type: 'study-minutes-report',
-    minutes,
-    ts: new Date().toISOString(),
-    ua: navigator.userAgent
-  };
+  const payload = { type:'study-minutes-report', minutes, ts:new Date().toISOString(), ua:navigator.userAgent };
   try{
-    // プリフライト回避（text/plain）＋ 失敗時no-cors保険
+    // プリフライト回避（text/plain）＋失敗時no-cors保険
     await fetch(GAS_ENDPOINT, {
       method:'POST',
       headers:{'Content-Type':'text/plain'},
       body: JSON.stringify(payload),
       keepalive: true
     }).catch(async ()=>{
-      await fetch(GAS_ENDPOINT, {
-        method:'POST', mode:'no-cors',
-        body: JSON.stringify(payload), keepalive:true
-      });
+      await fetch(GAS_ENDPOINT, { method:'POST', mode:'no-cors', body: JSON.stringify(payload), keepalive:true });
     });
     log(`送信: ${minutes} 分`);
-    studiedMinutes=0; localStorage.setItem('studiedMinutes','0'); updateMinutePill();
+    studiedMinutes=0; localStorage.setItem('studiedMinutes','0'); syncMinutePills();
   }catch(e){
     log('送信失敗: ' + (e?.message||e) + '（次回再送）');
   }
 }
 
-/* ----------------- Wake Lock ----------------- */
+/* ========== Wake Lock ========== */
 async function requestWakeLock(){ if('wakeLock' in navigator){ try{ wakeLock = await navigator.wakeLock.request('screen'); }catch{} } }
 async function releaseWakeLock(){ try { if (wakeLock) await wakeLock.release(); } catch {} }
 
-/* ----------------- ヘルパ ----------------- */
-function setState(active){ ui.statePill.textContent=active?'監視中':'停止中'; ui.statePill.className='pill '+(active?'ok':'ng'); }
+/* ========== ヘルパ ========== */
+function setState(active){
+  const txt = active?'監視中':'停止中';
+  const cls = 'pill ' + (active?'ok':'ng');
+  ui.statePill.textContent=txt; ui.statePill.className=cls;
+  ui.statePill_fs.textContent=txt; ui.statePill_fs.className=cls;
+}
 function setPill(el, label, on){ el.textContent = `${label}: ${on?'検出':'未検出'}`; el.className='pill '+(on?'ok':'ng'); }
-function updateMinutePill(){ ui.minutePill.textContent=`勉強分: ${studiedMinutes}`; }
+function syncMinutePills(){ const t=`勉強分: ${studiedMinutes}`; ui.minutePill.textContent=t; ui.minutePill_fs.textContent=t; }
 function log(s){ ui.log.textContent += `[${new Date().toLocaleTimeString()}] ${s}\n`; }
 function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi,v)); }
+function showToast(msg){ ui.toast.textContent=msg; ui.toast.classList.add('show'); setTimeout(()=>ui.toast.classList.remove('show'), 3000); }
 
-/* 背景化での自動停止は一旦オフ（端末によって誤停止しがち） */
+/* 背景化での自動停止はオフ（誤停止しがち） */
 // document.addEventListener('visibilitychange', ()=>{ if(document.hidden && running){ log('背景化→停止'); stop(); }});
-
-function applyOrientation(){
-  const landscape = window.matchMedia('(orientation: landscape)').matches;
-  document.body.classList.toggle('landscape', landscape);
-}
-window.addEventListener('resize', applyOrientation);
-window.addEventListener('orientationchange', applyOrientation);
-applyOrientation();
 </script>
+
+<!-- 依存スクリプト（CDNから動的ロード。HTMLへ直書きしない方針） -->
 </body>
 </html>
