@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Study Watcher Pro</title>
+<title>Study Watcher Pro (COCO-SSD版)</title>
 <style>
   :root { color-scheme: light dark; }
   html, body { height: 100%; }
@@ -24,7 +24,7 @@
   .fs main { padding: 0; }
   .fs video { max-height: none; height: 100vh; border-radius: 0; }
   .fs .floating-bar { position: fixed; bottom: 10px; left: 0; right: 0; display: flex; gap: 8px; justify-content: center; z-index: 3; }
-  .floating-bar button { opacity: .85; backdrop-filter: blur(6px); }
+  .floating-bar button { opacity: .9; backdrop-filter: blur(6px); }
 </style>
 </head>
 <body>
@@ -32,7 +32,8 @@
   <div class="row">
     <strong>Study Watcher Pro</strong>
     <span id="statePill" class="pill ng">停止中</span>
-    <span id="facePill" class="pill">顔: 未検出</span>
+    <span id="personPill" class="pill">人: 未検出</span>
+    <span id="phonePill" class="pill">スマホ: 未検出</span>
     <span id="scorePill" class="pill">スコア: 0</span>
     <span id="minutePill" class="pill">勉強分: 0</span>
   </div>
@@ -52,7 +53,7 @@
     <button id="fsBtn" class="pill" title="全画面にする">全画面</button>
   </div>
 
-  <p><small>ヒント：顔＋上半身＋机が入るように端末を置いてください。ホーム画面に追加（PWA化）すると安定します。</small></p>
+  <p><small>ヒント：上半身と机が映るように端末を置いてください。ホーム画面に追加（PWA化）すると安定します。</small></p>
 
   <details>
     <summary>ログ</summary>
@@ -60,7 +61,7 @@
   </details>
 </main>
 
-<!-- 全画面時に浮かせる操作バー（開始/停止/終了） -->
+<!-- 全画面時の浮遊操作バー -->
 <div class="floating-bar" style="display:none;">
   <button id="fsStart">開始</button>
   <button id="fsStop" disabled>停止</button>
@@ -68,16 +69,17 @@
 </div>
 
 <script>
-/* ===== 設定（あなたのGAS URLを入れてね） ===== */
+/* ====== 設定：あなたのGAS WebアプリURLに差し替え ====== */
 const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycby2tE_Xq1tm_NSDQVQYB52gIEb4_T5DxrYoYkbYbgdV-djRMFuFcqengAP9aWOhlKW4/exec";
-/* ============================================== */
+/* ======================================================== */
 
 const ui = {
   video: document.getElementById('video'),
   startBtn: document.getElementById('startBtn'),
   stopBtn: document.getElementById('stopBtn'),
   statePill: document.getElementById('statePill'),
-  facePill: document.getElementById('facePill'),
+  personPill: document.getElementById('personPill'),
+  phonePill: document.getElementById('phonePill'),
   scorePill: document.getElementById('scorePill'),
   minutePill: document.getElementById('minutePill'),
   presence: document.getElementById('presence'),
@@ -92,13 +94,13 @@ const ui = {
 
 let stream=null, wakeLock=null, running=false;
 let tickTimer=null, flushTimer=null;
-
-let faceDetector=null, poseModel=null, objModel=null;
+let model=null;
 
 let samples=0, studySamples=0, studiedMinutes=Number(localStorage.getItem('studiedMinutes')||0);
 updateMinutePill();
 
-/* ---- 多段CDNローダ（jsDelivr→unpkg フォールバック） ---- */
+/* ----------------- 依存（TFJS + COCO-SSD）読み込み ----------------- */
+/* jsDelivr → unpkg の順に試す（CDNブロック対策） */
 async function loadScriptTry(urls){
   let lastErr;
   for (const src of urls){
@@ -109,27 +111,17 @@ async function loadScriptTry(urls){
         s.onerror=()=>rej(new Error('load failed: '+src));
         document.head.appendChild(s);
       });
+      log('loaded: ' + src);
       return;
     }catch(e){ lastErr=e; log('CDN load error: '+src); }
   }
   throw lastErr || new Error('all CDN failed');
 }
 
-/* 依存の読み込み */
 async function loadDeps(){
-  if (!('FaceDetector' in window)) {
-    await loadScriptTry([
-      'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js',
-      'https://unpkg.com/@tensorflow/tfjs@4.20.0/dist/tf.min.js'
-    ]);
-    await loadScriptTry([
-      'https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.0.3/dist/face-detection.min.js',
-      'https://unpkg.com/@tensorflow-models/face-detection@1.0.3/dist/face-detection.min.js'
-    ]);
-  }
   await loadScriptTry([
-    'https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@3.7.0/dist/pose-detection.min.js',
-    'https://unpkg.com/@tensorflow-models/pose-detection@3.7.0/dist/pose-detection.min.js'
+    'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js',
+    'https://unpkg.com/@tensorflow/tfjs@4.15.0/dist/tf.min.js'
   ]);
   await loadScriptTry([
     'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
@@ -137,7 +129,7 @@ async function loadDeps(){
   ]);
 }
 
-/* ボタン */
+/* ----------------- UIボタン ----------------- */
 ui.startBtn.addEventListener('click', start);
 ui.stopBtn.addEventListener('click', stop);
 ui.fsStart.addEventListener('click', start);
@@ -145,13 +137,10 @@ ui.fsStop .addEventListener('click', stop);
 ui.fsBtn.addEventListener('click', toggleFullscreen);
 ui.fsExit.addEventListener('click', exitFullscreen);
 
-/* 全画面 */
+/* ----------------- フルスクリーン ----------------- */
 async function toggleFullscreen(){
-  if (!document.fullscreenElement) {
-    await enterFullscreen();
-  } else {
-    await exitFullscreen();
-  }
+  if (!document.fullscreenElement) await enterFullscreen();
+  else await exitFullscreen();
 }
 async function enterFullscreen(){
   try {
@@ -168,7 +157,7 @@ async function exitFullscreen(){
   ui.fsBar.style.display = 'none';
 }
 
-/* 開始（段階的エラーハンドリング） */
+/* ----------------- 開始/停止 ----------------- */
 async function start(){
   if (running) return;
   running = true;
@@ -178,13 +167,13 @@ async function start(){
   ui.fsStop.disabled = false;
   setState(true);
 
-  // 1) カメラ：失敗時のみ停止
+  // 1) カメラ
   try {
     log('[1] starting camera...');
     await startCamera();
     log('[1] camera ready');
   } catch (e) {
-    log('NG at camera: ' + (e && (e.message || e.name || e.toString())));
+    log('NG at camera: ' + (e?.message || e));
     setState(false);
     ui.startBtn.disabled=false; ui.stopBtn.disabled=true;
     ui.fsStart.disabled=false; ui.fsStop.disabled=true;
@@ -192,21 +181,25 @@ async function start(){
     return;
   }
 
-  // 2) 依存読み込み：失敗しても在席のみで継続
+  // 2) 依存
   try { log('[2] loading deps...'); await loadDeps(); log('[2] deps loaded'); }
-  catch (e) { log('NG at loadDeps: ' + (e && (e.message || e.name || e.toString())) + '（在席のみで継続）'); }
+  catch(e){ log('NG at loadDeps: ' + (e?.message||e) + '（在席のみで継続）'); }
 
-  // 3) モデル初期化：失敗しても継続
-  try { log('[3] init models...'); await initModels(); log('[3] models ready'); }
-  catch (e) { log('NG at initModels: ' + (e && (e.message || e.name || e.toString())) + '（在席のみで継続）'); }
+  // 3) モデル
+  try {
+    log('[3] loading model...');
+    model = await window.cocoSsd.load({base:'lite_mobilenet_v2'}); // 軽量構成
+    log('[3] model ready');
+  } catch(e){
+    log('NG at model load: ' + (e?.message||e) + '（在席のみで継続）');
+  }
 
   try { await requestWakeLock(); } catch {}
-  tickTimer = setInterval(tick, 1000);
-  scheduleFlush(); // 初期値1分
+  tickTimer = setInterval(tick, 1000);  // 1秒ごと推論
+  scheduleFlush();                      // 1分ごと送信（UI変更可）
   log('STARTED');
 }
 
-/* 停止 */
 async function stop(){
   running=false;
   clearInterval(tickTimer); clearInterval(flushTimer);
@@ -216,50 +209,46 @@ async function stop(){
   setState(false);
   ui.startBtn.disabled=false; ui.stopBtn.disabled=true;
   ui.fsStart.disabled=false; ui.fsStop.disabled=true;
-  await flushReport(true); // 残りを送る
+  await flushReport(true); // 残り送信
   log('STOPPED');
 }
 
-/* カメラ */
+/* ----------------- カメラ ----------------- */
 async function startCamera(){
   stream = await navigator.mediaDevices.getUserMedia({
-    video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480}, frameRate:{ideal:30,max:30} }, audio:false
+    video:{ facingMode:'user', width:{ideal:640}, height:{ideal:480} }, audio:false
   });
   ui.video.srcObject=stream; await ui.video.play();
 }
 
-/* モデル初期化 */
-async function initModels(){
-  if ('FaceDetector' in window){
-    faceDetector = new window.FaceDetector({ fastMode:true });
-  } else if (window.faceDetection) {
-    const { MediaPipeFaceDetector, SupportedModels } = window.faceDetection;
-    faceDetector = await MediaPipeFaceDetector.create({ runtime:'tfjs', model: SupportedModels.MediaPipeFaceDetector, maxFaces:1 });
-  }
-  if (window.poseDetection){
-    const { SupportedModels, createDetector } = window.poseDetection;
-    poseModel = await createDetector(SupportedModels.MoveNet, { modelType: 'Thunder' });
-  }
-  if (window.cocoSsd){
-    objModel = await cocoSsd.load();
-  }
-}
-
-/* 1秒ごとに判定 */
+/* ----------------- 毎秒の判定 ----------------- */
 async function tick(){
   if(!running) return;
   samples++;
 
-  const hasFace = await detectFace();
-  setFacePill(hasFace);
+  let hasPerson=false, hasPhone=false;
 
-  let poseScore = 0, phonePenalty = 0;
-  if (hasFace){
-    poseScore = await postureScore();
-    phonePenalty = await phoneScore();
+  try{
+    if (model) {
+      const preds = await model.detect(ui.video);
+      hasPerson = preds.some(p => p.class === 'person' && p.score >= 0.6);
+      hasPhone  = preds.some(p => (p.class === 'cell phone' || p.class === 'mobile phone') && p.score >= 0.6);
+    } else {
+      // モデル無しの場合は「在席のみ」でゆるく判定（動画が流れていれば在席扱い）
+      hasPerson = !!ui.video.srcObject;
+      hasPhone  = false;
+    }
+  }catch(e){
+    // 推論失敗は無視（在席のみ継続）
   }
 
-  const score = Math.max(0, Math.min(100, Math.round( (poseScore*0.7 + (hasFace?100:0)*0.3) - phonePenalty*40 )));
+  setPill(ui.personPill, '人', hasPerson);
+  setPill(ui.phonePill,  'スマホ', hasPhone);
+
+  // スコア: 人検出を主、スマホ検出で減点
+  const base = hasPerson ? 100 : 0;
+  const penalty = hasPhone ? 40 : 0;
+  const score = Math.max(0, Math.min(100, base - penalty));
   ui.scorePill.textContent = `スコア: ${score}`;
 
   if (score >= 60) studySamples++;
@@ -279,61 +268,7 @@ async function tick(){
   }
 }
 
-async function detectFace(){
-  try{
-    if (faceDetector && faceDetector.detect) {
-      const r = await faceDetector.detect(ui.video);
-      return r && r.length>0;
-    } else if (faceDetector && faceDetector.estimateFaces) {
-      const r = await faceDetector.estimateFaces(ui.video, { flipHorizontal:true });
-      return r && r.length>0;
-    } else {
-      return false; // フォールバックは false（誤検出防止）
-    }
-  }catch{ return false; }
-}
-
-async function postureScore(){
-  try{
-    if (!poseModel || !poseModel.estimatePoses) return 50; // 中立
-    const poses = await poseModel.estimatePoses(ui.video, { flipHorizontal:true });
-    if (!poses || !poses[0] || !poses[0].keypoints) return 50;
-    const k = Object.fromEntries(poses[0].keypoints.map(p=>[p.name||p.part, p]));
-    const le=k.left_eye||k.leftEye, re=k.right_eye||k.rightEye, leEar=k.left_ear||k.leftEar, reEar=k.right_ear||k.rightEar, ls=k.left_shoulder||k.leftShoulder, rs=k.right_shoulder||k.rightShoulder, lw=k.left_wrist||k.leftWrist, rw=k.right_wrist||k.rightWrist;
-
-    if(!ls||!rs) return 50;
-
-    const headTilt = (()=>{ // 下向き軽く加点、上向き減点
-      const eyesY = avg([le?.y, re?.y].filter(v=>isFinite(v)));
-      const earsY = avg([leEar?.y, reEar?.y].filter(v=>isFinite(v)));
-      if (!isFinite(eyesY) || !isFinite(earsY)) return 50;
-      const d = eyesY - earsY; // 正で下向き
-      return clamp(50 + d*0.2, 0, 100);
-    })();
-
-    const shoulderSlope = Math.atan2((ls.y - rs.y), (ls.x - rs.x));
-    const stability = 100 - Math.min(100, Math.abs(shoulderSlope)*120);
-
-    const vh = ui.video.videoHeight || 480;
-    const deskY = vh * (2/3);
-    let handsAtDesk = 0;
-    [lw, rw].forEach(w=>{ if(w && w.y>=deskY) handsAtDesk+=1; });
-    const handsScore = [0, 60, 100][handsAtDesk] ?? 0;
-
-    return Math.round( headTilt*0.35 + stability*0.25 + handsScore*0.40 );
-  }catch{ return 50; }
-}
-
-async function phoneScore(){
-  try{
-    if (!objModel || !objModel.detect) return 0;
-    const preds = await objModel.detect(ui.video);
-    const phone = preds.find(p=>p.class==='cell phone' && p.score>=0.6);
-    return phone ? Math.min(1, phone.score) : 0;
-  }catch{ return 0; }
-}
-
-/* 送信（デフォルト1分ごと） */
+/* ----------------- 送信（デフォ1分ごと） ----------------- */
 function scheduleFlush(){
   const mins = clamp(Number(ui.flush.value)||1, 1, 30);
   if (flushTimer) clearInterval(flushTimer);
@@ -350,40 +285,37 @@ async function flushReport(force){
     ua: navigator.userAgent
   };
   try{
-    // ★ CORSプリフライト回避（text/plain）＋保険のno-cors送信
+    // プリフライト回避（text/plain）＋ 失敗時no-cors保険
     await fetch(GAS_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
+      method:'POST',
+      headers:{'Content-Type':'text/plain'},
       body: JSON.stringify(payload),
       keepalive: true
-    }).catch(async () => {
+    }).catch(async ()=>{
       await fetch(GAS_ENDPOINT, {
-        method: 'POST',
-        mode: 'no-cors',
-        body: JSON.stringify(payload),
-        keepalive: true
+        method:'POST', mode:'no-cors',
+        body: JSON.stringify(payload), keepalive:true
       });
     });
     log(`送信: ${minutes} 分`);
     studiedMinutes=0; localStorage.setItem('studiedMinutes','0'); updateMinutePill();
   }catch(e){
-    log('送信失敗: ' + (e && (e.message || e.name || e.toString())) + '（次回再送）');
+    log('送信失敗: ' + (e?.message||e) + '（次回再送）');
   }
 }
 
-/* Wake Lock */
+/* ----------------- Wake Lock ----------------- */
 async function requestWakeLock(){ if('wakeLock' in navigator){ try{ wakeLock = await navigator.wakeLock.request('screen'); }catch{} } }
 async function releaseWakeLock(){ try { if (wakeLock) await wakeLock.release(); } catch {} }
 
-/* UIヘルパ */
+/* ----------------- ヘルパ ----------------- */
 function setState(active){ ui.statePill.textContent=active?'監視中':'停止中'; ui.statePill.className='pill '+(active?'ok':'ng'); }
-function setFacePill(has){ ui.facePill.textContent=has?'顔: 検出':'顔: 未検出'; ui.facePill.className='pill '+(has?'ok':'ng'); }
+function setPill(el, label, on){ el.textContent = `${label}: ${on?'検出':'未検出'}`; el.className='pill '+(on?'ok':'ng'); }
 function updateMinutePill(){ ui.minutePill.textContent=`勉強分: ${studiedMinutes}`; }
 function log(s){ ui.log.textContent += `[${new Date().toLocaleTimeString()}] ${s}\n`; }
 function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi,v)); }
-function avg(a){ return a.length? a.reduce((x,y)=>x+y,0)/a.length : NaN; }
 
-/* デバッグ中に誤停止する端末があるので、背景化即停止は一旦オフ */
+/* 背景化での自動停止は一旦オフ（端末によって誤停止しがち） */
 // document.addEventListener('visibilitychange', ()=>{ if(document.hidden && running){ log('背景化→停止'); stop(); }});
 </script>
 </body>
