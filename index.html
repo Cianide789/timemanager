@@ -94,29 +94,47 @@ let stream=null, wakeLock=null, running=false;
 let tickTimer=null, flushTimer=null;
 
 let faceDetector=null, poseModel=null, objModel=null;
-let useTFJSFace=false;
 
 let samples=0, studySamples=0, studiedMinutes=Number(localStorage.getItem('studiedMinutes')||0);
 updateMinutePill();
 
+/* ---- 多段CDNローダ（jsDelivr→unpkg フォールバック） ---- */
+async function loadScriptTry(urls){
+  let lastErr;
+  for (const src of urls){
+    try{
+      await new Promise((res, rej)=>{
+        const s=document.createElement('script');
+        s.src=src; s.defer=true; s.onload=res;
+        s.onerror=()=>rej(new Error('load failed: '+src));
+        document.head.appendChild(s);
+      });
+      return;
+    }catch(e){ lastErr=e; log('CDN load error: '+src); }
+  }
+  throw lastErr || new Error('all CDN failed');
+}
+
 /* 依存の読み込み */
 async function loadDeps(){
   if (!('FaceDetector' in window)) {
-    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
-    await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.0.3/dist/face-detection.min.js');
-    useTFJSFace = true;
+    await loadScriptTry([
+      'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js',
+      'https://unpkg.com/@tensorflow/tfjs@4.20.0/dist/tf.min.js'
+    ]);
+    await loadScriptTry([
+      'https://cdn.jsdelivr.net/npm/@tensorflow-models/face-detection@1.0.3/dist/face-detection.min.js',
+      'https://unpkg.com/@tensorflow-models/face-detection@1.0.3/dist/face-detection.min.js'
+    ]);
   }
-  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@3.7.0/dist/pose-detection.min.js');
-  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
-}
-function loadScript(src){
-  return new Promise((resolve, reject)=>{
-    const s=document.createElement('script');
-    s.src=src; s.defer=true;
-    s.onload=resolve;
-    s.onerror=()=>{ log('CDN load error: ' + src); reject(new Error('load failed: '+src)); };
-    document.head.appendChild(s);
-  });
+  await loadScriptTry([
+    'https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@3.7.0/dist/pose-detection.min.js',
+    'https://unpkg.com/@tensorflow-models/pose-detection@3.7.0/dist/pose-detection.min.js'
+  ]);
+  await loadScriptTry([
+    'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js',
+    'https://unpkg.com/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js'
+  ]);
 }
 
 /* ボタン */
@@ -142,7 +160,6 @@ async function enterFullscreen(){
   } catch {}
   document.body.classList.add('fs');
   ui.fsBar.style.display = 'flex';
-  // 端末が対応してたら縦固定
   try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('portrait'); } catch {}
 }
 async function exitFullscreen(){
@@ -161,7 +178,7 @@ async function start(){
   ui.fsStop.disabled = false;
   setState(true);
 
-  // 1) カメラ：ここだけ失敗したら停止
+  // 1) カメラ：失敗時のみ停止
   try {
     log('[1] starting camera...');
     await startCamera();
@@ -185,7 +202,7 @@ async function start(){
 
   try { await requestWakeLock(); } catch {}
   tickTimer = setInterval(tick, 1000);
-  scheduleFlush(); // ← デフォルト 1分
+  scheduleFlush(); // 初期値1分
   log('STARTED');
 }
 
@@ -271,8 +288,7 @@ async function detectFace(){
       const r = await faceDetector.estimateFaces(ui.video, { flipHorizontal:true });
       return r && r.length>0;
     } else {
-      // 依存がない場合は「在席のみ」＝映像が再生されていれば在席扱い
-      return !!ui.video.srcObject;
+      return false; // フォールバックは false（誤検出防止）
     }
   }catch{ return false; }
 }
@@ -283,7 +299,7 @@ async function postureScore(){
     const poses = await poseModel.estimatePoses(ui.video, { flipHorizontal:true });
     if (!poses || !poses[0] || !poses[0].keypoints) return 50;
     const k = Object.fromEntries(poses[0].keypoints.map(p=>[p.name||p.part, p]));
-    const nose=k.nose, le=k.left_eye||k.leftEye, re=k.right_eye||k.rightEye, leEar=k.left_ear||k.leftEar, reEar=k.right_ear||k.rightEar, ls=k.left_shoulder||k.leftShoulder, rs=k.right_shoulder||k.rightShoulder, lw=k.left_wrist||k.leftWrist, rw=k.right_wrist||k.rightWrist;
+    const le=k.left_eye||k.leftEye, re=k.right_eye||k.rightEye, leEar=k.left_ear||k.leftEar, reEar=k.right_ear||k.rightEar, ls=k.left_shoulder||k.leftShoulder, rs=k.right_shoulder||k.rightShoulder, lw=k.left_wrist||k.leftWrist, rw=k.right_wrist||k.rightWrist;
 
     if(!ls||!rs) return 50;
 
@@ -334,11 +350,19 @@ async function flushReport(force){
     ua: navigator.userAgent
   };
   try{
+    // ★ CORSプリフライト回避（text/plain）＋保険のno-cors送信
     await fetch(GAS_ENDPOINT, {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
-      // CORSエラーが出る場合は一時的に mode:'no-cors' を付けて“投げっぱなし”にできます
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(payload),
+      keepalive: true
+    }).catch(async () => {
+      await fetch(GAS_ENDPOINT, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: JSON.stringify(payload),
+        keepalive: true
+      });
     });
     log(`送信: ${minutes} 分`);
     studiedMinutes=0; localStorage.setItem('studiedMinutes','0'); updateMinutePill();
