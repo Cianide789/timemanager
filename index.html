@@ -3,6 +3,16 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<!-- favicon（SVGを推し。古い環境は ICO も同梱しておくと安心） -->
+<link rel="icon" href="/icon.ico" type="image/svg+xml">
+<link rel="alternate icon" href="/icon.ico" />
+
+<!-- PWAマニフェスト -->
+<link rel="manifest" href="/manifest.webmanifest">
+
+<!-- AndroidのUIカラー -->
+<meta name="theme-color" content="#111111">
+
 <title>Study Watcher Pro (COCO-SSD版)</title>
 <style>
   :root { color-scheme: light dark; }
@@ -30,9 +40,8 @@
   /* 全画面中は横向きレイアウト（Landscape）に切り替え */
   body.fs header { display: none; }
   body.fs main {
-    /* ★ top-pills 分の上余白を確保（安全領域も考慮） */
+    /* top-pills 分の上余白（安全領域も考慮） */
     padding-top: calc(44px + env(safe-area-inset-top, 0px));
-
     padding-left: 12px; padding-right: 12px; padding-bottom: 8px;
     display: grid;
     grid-template-columns: 1.4fr 1fr;  /* 左:映像 / 右:操作&ログ */
@@ -43,19 +52,14 @@
     max-height: none;
     height: 100vh;
     border-radius: 0;
-    /* ★ ここにあった margin-top は不要なので削除 */
   }
   body.fs .floating-bar {
-  position: fixed;
-  bottom: 20px; /* ← 10px から 20px に変更 */
-  left: 0;
-  right: 0;
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  z-index: 5;
+    position: fixed;
+    bottom: calc(20px + env(safe-area-inset-bottom, 0px)); /* かぶり防止 */
+    left: 0; right: 0;
+    display: flex; gap: 8px; justify-content: center;
+    z-index: 5;
   }
-
   body.fs .floating-bar button { opacity: .9; backdrop-filter: blur(6px); }
 
   /* 全画面時の簡易ヘッダー（横スクロール可） */
@@ -66,7 +70,7 @@
     overflow-x: auto; white-space: nowrap;
     position: fixed; top: 0; left: 0; right: 0;
     background: inherit; z-index: 3;
-    height: 44px; /* ★ 高さを明示 */
+    height: 44px; /* 高さを明示 */
   }
 
   /* 端末が横向きロック不可の時に出すトースト */
@@ -117,7 +121,7 @@
   </div>
 
   <p><small>ヒント：普段は縦向きでOK。全画面にすると横向きに切り替わります（端末が許せば自動ロック）。</small></p>
-  <p><small>ver.1.15</small></p>
+  <p><small>ver.1.20</small></p>
   <details>
     <summary>ログ</summary>
     <div id="log"></div>
@@ -170,8 +174,21 @@ let stream=null, wakeLock=null, running=false;
 let tickTimer=null, flushTimer=null;
 let model=null;
 
-let samples=0, studySamples=0, studiedMinutes=Number(localStorage.getItem('studiedMinutes')||0);
+/* 表示用の合計と、未送信バッファを分離 */
+let samples=0, studySamples=0;
+let totalMinutes  = Number(localStorage.getItem('totalMinutes')  || 0);  // 画面表示に使う累計
+let unsentMinutes = Number(localStorage.getItem('unsentMinutes') || 0);  // サーバへ送る未送信分
 syncMinutePills();
+
+/* 旧キーからの移行（初回のみ） */
+if (localStorage.getItem('studiedMinutes') != null && !localStorage.getItem('totalMinutes')) {
+  const old = Number(localStorage.getItem('studiedMinutes')||0);
+  totalMinutes = old; unsentMinutes = 0;
+  localStorage.removeItem('studiedMinutes');
+  localStorage.setItem('totalMinutes', String(totalMinutes));
+  localStorage.setItem('unsentMinutes','0');
+  syncMinutePills();
+}
 
 /* ========== 依存（TFJS + COCO-SSD）読み込み（CDN多段） ========== */
 async function loadScriptTry(urls){
@@ -225,7 +242,6 @@ async function enterFullscreen(){
     if (screen.orientation && screen.orientation.lock) {
       await screen.orientation.lock('landscape');
     } else {
-      // iOS Safari など未対応 → トーストで案内
       showToast('横向きにしてください（端末の回転ロックを解除）');
     }
   } catch {
@@ -236,8 +252,6 @@ async function exitFullscreen(){
   try { if (document.fullscreenElement) await document.exitFullscreen(); } catch {}
   document.body.classList.remove('fs');
   ui.fsBar.style.display = 'none';
-
-  // 可能ならポートレートへ戻す（失敗しても問題なし）
   try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('portrait'); } catch {}
 }
 
@@ -343,8 +357,10 @@ async function tick(){
     const ratio = (studySamples/samples)*100;
     const th = clamp(Number(ui.presence.value)||70, 50, 100);
     if (ratio >= th){
-      studiedMinutes++;
-      localStorage.setItem('studiedMinutes', String(studiedMinutes));
+      totalMinutes++;
+      unsentMinutes++;
+      localStorage.setItem('totalMinutes',  String(totalMinutes));
+      localStorage.setItem('unsentMinutes', String(unsentMinutes));
       syncMinutePills();
       log(`+1分（勉強フレーム率 ${ratio.toFixed(0)}% >= しきい値 ${th}%）`);
     }else{
@@ -361,8 +377,9 @@ function scheduleFlush(){
   flushTimer = setInterval(()=>flushReport(false), mins*60*1000);
 }
 async function flushReport(force){
-  const minutes = studiedMinutes;
+  const minutes = unsentMinutes;              // 未送信分だけ送る
   if (!minutes && !force) return;
+
   const payload = { type:'study-minutes-report', minutes, ts:new Date().toISOString(), ua:navigator.userAgent };
   try{
     // プリフライト回避（text/plain）＋失敗時no-cors保険
@@ -374,8 +391,12 @@ async function flushReport(force){
     }).catch(async ()=>{
       await fetch(GAS_ENDPOINT, { method:'POST', mode:'no-cors', body: JSON.stringify(payload), keepalive:true });
     });
+
     log(`送信: ${minutes} 分`);
-    studiedMinutes=0; localStorage.setItem('studiedMinutes','0'); syncMinutePills();
+    // 表示用の totalMinutes は維持、未送信バッファだけリセット
+    unsentMinutes = 0;
+    localStorage.setItem('unsentMinutes','0');
+    syncMinutePills();
   }catch(e){
     log('送信失敗: ' + (e?.message||e) + '（次回再送）');
   }
@@ -393,7 +414,11 @@ function setState(active){
   ui.statePill_fs.textContent=txt; ui.statePill_fs.className=cls;
 }
 function setPill(el, label, on){ el.textContent = `${label}: ${on?'検出':'未検出'}`; el.className='pill '+(on?'ok':'ng'); }
-function syncMinutePills(){ const t=`勉強分: ${studiedMinutes}`; ui.minutePill.textContent=t; ui.minutePill_fs.textContent=t; }
+function syncMinutePills(){
+  const t=`勉強分: ${totalMinutes}`;
+  ui.minutePill.textContent=t;
+  ui.minutePill_fs.textContent=t;
+}
 function log(s){ ui.log.textContent += `[${new Date().toLocaleTimeString()}] ${s}\n`; }
 function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi,v)); }
 function showToast(msg){ ui.toast.textContent=msg; ui.toast.classList.add('show'); setTimeout(()=>ui.toast.classList.remove('show'), 3000); }
