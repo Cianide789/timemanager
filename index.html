@@ -28,7 +28,7 @@
   main { padding: 12px 16px; }
   .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
   video { width: 100%; max-height: 44vh; background: #000; border-radius: 12px; }
-  .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #ccc; font-size: 14px; }
+  .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid #000000; font-size: 14px; }
   .ok { background: #e7f7ee; border-color: #a3d8bf; }
   .ng { background: #fdeaea; border-color: #f2b7b7; }
   button { padding: 10px 14px; border-radius: 10px; border: 1px solid #ccc; font-size: 16px; background: ButtonFace; color: ButtonText; }
@@ -96,7 +96,7 @@
     <span id="statePill" class="pill ng">停止中</span>
     <span id="personPill" class="pill">人: 未検出</span>
     <span id="phonePill" class="pill">スマホ: 未検出</span>
-    <span id="scorePill" class="pill">スコア: 0</span>
+    <!--<span id="scorePill" class="pill">スコア: 0</span>  -->
     <span id="minutePill" class="pill">勉強分: 0</span>
   </div>
 </header>
@@ -106,8 +106,8 @@
   <span id="statePill_fs"  class="pill ng">停止中</span>
   <span id="personPill_fs" class="pill">人: 未検出</span>
   <span id="phonePill_fs"  class="pill">スマホ: 未検出</span>
-  <span id="scorePill_fs"  class="pill">スコア: 0</span>
-  <span id="minutePill_fs" class="pill">勉強分: 0</span>
+  <!--<span id="scorePill_fs"  class="pill">スコア: 0</span>  -->
+  <span id="minutePill_fs" class="pill">勉強分数: 0</span>
 </div>
 
 <main>
@@ -120,10 +120,10 @@
     <button id="fsBtn" class="pill" title="全画面にする">全画面</button>
   </div>
 
-  <p><small>ヒント：普段は縦向きでOK。全画面にすると横向きに切り替わります（端末が許せば自動ロック）。</small></p>
-  <p><small>ver.1.20</small></p>
+  <p><small>Hint：全画面にすると横向きに切り替わります。</small></p>
+  <p><small>ver.1.21</small></p>
   <details>
-    <summary>ログ</summary>
+    <summary>Log</summary>
     <div id="log"></div>
   </details>
 </main>
@@ -176,7 +176,7 @@ let model=null;
 
 /* 表示用の合計と、未送信バッファを分離 */
 let samples=0, studySamples=0;
-let totalMinutes  = Number(localStorage.getItem('totalMinutes')  || 0);  // 画面表示に使う累計
+let totalMinutes  = Number(sessionStorage.getItem('totalMinutes')  || 0);  // 画面表示に使う累計
 let unsentMinutes = Number(localStorage.getItem('unsentMinutes') || 0);  // サーバへ送る未送信分
 syncMinutePills();
 
@@ -185,7 +185,7 @@ if (localStorage.getItem('studiedMinutes') != null && !localStorage.getItem('tot
   const old = Number(localStorage.getItem('studiedMinutes')||0);
   totalMinutes = old; unsentMinutes = 0;
   localStorage.removeItem('studiedMinutes');
-  localStorage.setItem('totalMinutes', String(totalMinutes));
+  sessionStorage.setItem('totalMinutes', String(totalMinutes));
   localStorage.setItem('unsentMinutes','0');
   syncMinutePills();
 }
