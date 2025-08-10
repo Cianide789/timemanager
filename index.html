@@ -30,29 +30,45 @@
   /* 全画面中は横向きレイアウト（Landscape）に切り替え */
   body.fs header { display: none; }
   body.fs main {
-    padding: 8px 12px;
+    /* ★ top-pills 分の上余白を確保（安全領域も考慮） */
+    padding-top: calc(44px + env(safe-area-inset-top, 0px));
+
+    padding-left: 12px; padding-right: 12px; padding-bottom: 8px;
     display: grid;
     grid-template-columns: 1.4fr 1fr;  /* 左:映像 / 右:操作&ログ */
     gap: 12px;
     align-items: start;
   }
-  body.fs video { max-height: none; height: 100vh; border-radius: 0; }
-  body.fs .floating-bar { position: fixed; bottom: 10px; left: 0; right: 0; display: flex; gap: 8px; justify-content: center; z-index: 3; }
+  body.fs video {
+    max-height: none;
+    height: 100vh;
+    border-radius: 0;
+    /* ★ ここにあった margin-top は不要なので削除 */
+  }
+  body.fs .floating-bar {
+    position: fixed;
+    bottom: 10px; left: 0; right: 0;
+    display: flex; gap: 8px; justify-content: center;
+    z-index: 5; /* ★ ヘッダーより前面に */
+  }
   body.fs .floating-bar button { opacity: .9; backdrop-filter: blur(6px); }
 
-  /* 横スクロールでピルが潰れないように（全画面時の簡易ヘッダー代わり） */
+  /* 全画面時の簡易ヘッダー（横スクロール可） */
   .top-pills { display: none; }
   body.fs .top-pills {
-    display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #ddd; overflow-x: auto; white-space: nowrap;
-    position: fixed; top: 0; left: 0; right: 0; background: inherit; z-index: 3;
+    display: flex; gap: 8px; padding: 8px 12px;
+    border-bottom: 1px solid #ddd;
+    overflow-x: auto; white-space: nowrap;
+    position: fixed; top: 0; left: 0; right: 0;
+    background: inherit; z-index: 3;
+    height: 44px; /* ★ 高さを明示 */
   }
-  body.fs video { margin-top: 36px; } /* ピル帯のぶん下げる */
 
   /* 端末が横向きロック不可の時に出すトースト */
   .toast {
     position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
     background: rgba(0,0,0,.7); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 14px;
-    z-index: 5; display: none;
+    z-index: 6; display: none;
   }
   .toast.show { display: block; }
 
@@ -62,6 +78,7 @@
     .grid { gap: 8px; }
   }
 </style>
+
 </head>
 <body>
 <header>
@@ -95,7 +112,7 @@
   </div>
 
   <p><small>ヒント：普段は縦向きでOK。全画面にすると横向きに切り替わります（端末が許せば自動ロック）。</small></p>
-  <p><small>ver.1.13</small></p>
+  <p><small>ver.1.14</small></p>
   <details>
     <summary>ログ</summary>
     <div id="log"></div>
