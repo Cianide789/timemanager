@@ -25,6 +25,33 @@
   .fs video { max-height: none; height: 100vh; border-radius: 0; }
   .fs .floating-bar { position: fixed; bottom: 10px; left: 0; right: 0; display: flex; gap: 8px; justify-content: center; z-index: 3; }
   .floating-bar button { opacity: .9; backdrop-filter: blur(6px); }
+  /* 横向きのときだけ適用 */
+  @media (orientation: landscape) {
+  /* ヘッダーのピル（バッジ）を横スクロール可にして潰れ防止 */
+  header .row { flex-wrap: nowrap; overflow-x: auto; white-space: nowrap; gap: 8px; }
+  .pill { font-size: 12px; padding: 4px 8px; }
+
+  /* メインは2カラム：左=映像 右=操作&ログ */
+  main { 
+    padding: 8px 12px; 
+    display: grid; 
+    grid-template-columns: 1.4fr 1fr; 
+    gap: 12px; 
+    align-items: start; 
+  }
+
+  /* 映像は縦いっぱい（安全余白を少し引く） */
+  video { 
+    max-height: none; 
+    height: calc(100vh - 90px); /* 端末により ± 調整してOK */
+    border-radius: 10px;
+  }
+
+  /* ボタンのグリッドや入力幅をコンパクトに */
+  .grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  label.pill input { width: 56px !important; }
+}
+
 </style>
 </head>
 <body>
@@ -317,6 +344,14 @@ function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi,v)); }
 
 /* 背景化での自動停止は一旦オフ（端末によって誤停止しがち） */
 // document.addEventListener('visibilitychange', ()=>{ if(document.hidden && running){ log('背景化→停止'); stop(); }});
+
+function applyOrientation(){
+  const landscape = window.matchMedia('(orientation: landscape)').matches;
+  document.body.classList.toggle('landscape', landscape);
+}
+window.addEventListener('resize', applyOrientation);
+window.addEventListener('orientationchange', applyOrientation);
+applyOrientation();
 </script>
 </body>
 </html>
